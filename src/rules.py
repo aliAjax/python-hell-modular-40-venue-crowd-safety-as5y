@@ -1,11 +1,65 @@
 from .domain import ConflictError, InvalidTransition, PermissionDenied, ValidationError
 
 
+UNFINISHED_TASK_STATUSES = frozenset({"draft", "assigned", "enroute", "on_scene"})
+TERMINAL_ZONE_STATUSES = frozenset({"split", "merged"})
+ZONE_RECONFIG_ROLES = ("admin",)
+
+
 def _find_one(lookup, kind, field, value):
     if lookup is None:
         return None
     rows = lookup(kind, field, value) or []
     return rows[0] if rows else None
+
+
+def is_unfinished_task(task):
+    return task["status"] in UNFINISHED_TASK_STATUSES
+
+
+def is_pending_incident(incident):
+    # resolved incidents are history and keep their original zone; every other
+    # status means the incident is still being handled.
+    return incident["status"] != "resolved"
+
+
+def require_reconfig_role(actor):
+    if actor.role not in ZONE_RECONFIG_ROLES:
+        raise PermissionDenied("only admin may split or merge zones")
+
+
+def check_split_conservation(zone, capacity_a, occupancy_a, capacity_b, occupancy_b):
+    total_capacity = int(zone["data"].get("capacity", 0))
+    total_occupancy = int(zone["data"].get("current_occupancy", 0))
+    if capacity_a + capacity_b != total_capacity:
+        raise ValidationError(
+            "capacity split must conserve total capacity: %s + %s != %s"
+            % (capacity_a, capacity_b, total_capacity)
+        )
+    if occupancy_a + occupancy_b != total_occupancy:
+        raise ValidationError(
+            "occupancy split must conserve total occupancy: %s + %s != %s"
+            % (occupancy_a, occupancy_b, total_occupancy)
+        )
+
+
+def check_merge_conservation(zone_a, zone_b, merged_capacity, merged_occupancy):
+    total_capacity = int(zone_a["data"].get("capacity", 0)) + int(
+        zone_b["data"].get("capacity", 0)
+    )
+    total_occupancy = int(zone_a["data"].get("current_occupancy", 0)) + int(
+        zone_b["data"].get("current_occupancy", 0)
+    )
+    if merged_capacity != total_capacity:
+        raise ValidationError(
+            "merge must conserve total capacity: %s != %s"
+            % (merged_capacity, total_capacity)
+        )
+    if merged_occupancy != total_occupancy:
+        raise ValidationError(
+            "merge must conserve total occupancy: %s != %s"
+            % (merged_occupancy, total_occupancy)
+        )
 
 
 def incident_priority(severity, incident_type):
@@ -30,7 +84,7 @@ def capacity_available(capacity, occupancy, requested):
 def _validate_venue(actor, data, lookup):
     if not str(data.get("name", "")).strip():
         raise ValidationError("venue name is required")
-    return {}
+    return {"structure_version": 1}
 
 
 def _validate_zone(actor, data, lookup):
