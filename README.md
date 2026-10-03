@@ -23,12 +23,48 @@ python3 app.py --db ./data.db --port 8340
 
 `venue`为场馆，`zone`为区域，`gate`为入场口，`post`为安保岗位，`medical_point`为医疗点，`incident`为事件，`task`为现场任务。
 
+### 区域拆并
+
+管理员可在同一场馆内拆分或合并区域。拆分会把原区域标记为`superseded`并创建两个新区域；合并会把两个旧区域标记为`superseded`并创建一个新区域。旧区域不会删除，`GET /api/entities/<旧编号>`和关联审计仍可用于历史查询。
+
+拆分请求示例：
+
+```json
+{
+  "zone_id": "north",
+  "expected_version": 3,
+  "new_zones": [
+    {"id": "north-a", "name": "North A", "capacity": 60, "current_occupancy": 30},
+    {"id": "north-b", "name": "North B", "capacity": 40, "current_occupancy": 20}
+  ],
+  "gate_targets": {"gate-1": ["north-a", "north-b"]},
+  "task_targets": {"task-1": "north-b"}
+}
+```
+
+未显式指定的入场口默认同时关联两个新区域；未完成任务必须通过`task_targets`或`task_zone_id`指定归属。两个新区域容量之和、人数之和必须分别等于原区域。
+
+合并请求示例：
+
+```json
+{
+  "zone_ids": ["north-a", "north-b"],
+  "expected_versions": {"north-a": 2, "north-b": 1},
+  "target_id": "north",
+  "name": "North Stand"
+}
+```
+
+合并后容量和人数为两个旧区域之和，关联入场口改挂新区域，未完成现场任务统一改挂新区域；已结束事件保留原区域编号。区域正在疏散或存在未结束事件（`reported`、`triaged`、`dispatched`、`reopened`）时拒绝拆并。整次拆并在一个SQLite事务中提交，写入失败会回滚。
+
 ## 接口
 
 - `GET /health`
 - `GET /api/<kind>`，可用`?status=`过滤
 - `GET /api/entities/<id>`
 - `POST /api/<kind>`
+- `POST /api/zone/split`（管理员拆分区域）
+- `POST /api/zone/merge`（管理员合并同场馆两个区域）
 - `POST /api/entities/<id>/actions`
 - `GET /api/audit`
 

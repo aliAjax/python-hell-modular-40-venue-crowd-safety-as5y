@@ -33,6 +33,13 @@ def _validate_venue(actor, data, lookup):
     return {}
 
 
+def _active_zone(lookup, zone_id):
+    zone = _find_one(lookup, "zone", "id", zone_id)
+    if zone and zone["status"] != "superseded" and not zone["data"].get("superseded_at"):
+        return zone
+    return None
+
+
 def _validate_zone(actor, data, lookup):
     if not _find_one(lookup, "venue", "id", data.get("venue_id")):
         raise ValidationError("venue does not exist")
@@ -49,14 +56,14 @@ def _validate_gate(actor, data, lookup):
     if not zone_ids:
         raise ValidationError("gate must connect at least one zone")
     for zone_id in zone_ids:
-        zone = _find_one(lookup, "zone", "id", zone_id)
+        zone = _active_zone(lookup, zone_id)
         if not zone or zone["data"].get("venue_id") != venue["id"]:
-            raise ValidationError("gate zones must belong to the venue")
+            raise ValidationError("gate zones must belong to the venue and be active")
     return {}
 
 
 def _validate_post(actor, data, lookup):
-    zone = _find_one(lookup, "zone", "id", data.get("zone_id"))
+    zone = _active_zone(lookup, data.get("zone_id"))
     if not zone or zone["data"].get("venue_id") != data.get("venue_id"):
         raise ValidationError("post zone must belong to the venue")
     if int(data.get("staff_count", 0)) <= 0:
@@ -65,7 +72,7 @@ def _validate_post(actor, data, lookup):
 
 
 def _validate_medical_point(actor, data, lookup):
-    zone = _find_one(lookup, "zone", "id", data.get("zone_id"))
+    zone = _active_zone(lookup, data.get("zone_id"))
     if not zone or zone["data"].get("venue_id") != data.get("venue_id"):
         raise ValidationError("medical point zone must belong to the venue")
     if int(data.get("capacity", 0)) <= 0:
@@ -74,7 +81,7 @@ def _validate_medical_point(actor, data, lookup):
 
 
 def _validate_incident(actor, data, lookup):
-    zone = _find_one(lookup, "zone", "id", data.get("zone_id"))
+    zone = _active_zone(lookup, data.get("zone_id"))
     if not zone or zone["data"].get("venue_id") != data.get("venue_id"):
         raise ValidationError("incident zone must belong to the venue")
     incident_key = "%s:%s" % (data["venue_id"], data["source_ref"])
@@ -90,8 +97,9 @@ def _validate_task(actor, data, lookup):
     incident = _find_one(lookup, "incident", "id", data.get("incident_id"))
     if not incident or incident["data"].get("venue_id") != data.get("venue_id"):
         raise ValidationError("task incident must belong to the venue")
-    if not _find_one(lookup, "zone", "id", data.get("zone_id")):
-        raise ValidationError("task zone does not exist")
+    zone = _active_zone(lookup, data.get("zone_id"))
+    if not zone or zone["data"].get("venue_id") != data.get("venue_id"):
+        raise ValidationError("task zone must belong to the venue")
     return {}
 
 
@@ -136,6 +144,13 @@ def _validate_task_assign(actor, entity, data, lookup):
         if task["id"] != entity["id"] and task["status"] in active:
             raise ConflictError("team already has an active task")
     return {"assigned_by": actor.user_id}
+
+
+def _validate_incident_reopen(actor, entity, data, lookup):
+    zone = _find_one(lookup, "zone", "id", entity["data"].get("zone_id"))
+    if not zone or zone["status"] == "superseded" or zone["data"].get("superseded_at"):
+        raise ConflictError("cannot reopen an incident in a superseded zone")
+    return {}
 
 
 def _validate_correct(actor, entity, data, lookup):
@@ -291,6 +306,7 @@ class RuleEngine:
         ("zone", "correct"): _validate_correct,
         ("gate", "open"): _validate_gate_open,
         ("incident", "correct"): _validate_correct,
+        ("incident", "reopen"): _validate_incident_reopen,
         ("task", "assign"): _validate_task_assign,
     }
 

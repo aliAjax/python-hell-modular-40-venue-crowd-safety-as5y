@@ -72,6 +72,15 @@ def create_handler(service, rules, static_dir):
                 status = 500
             self._send(status, {"error": str(exc), "type": type(exc).__name__})
 
+        def _reorganization(self, action, body):
+            if action not in ("split", "merge"):
+                return None
+            data = body.get("data", body)
+            actor = self._actor()
+            if action == "split":
+                return service.split_zone(actor, data)
+            return service.merge_zones(actor, data)
+
         def do_GET(self):
             try:
                 parsed = urlparse(self.path)
@@ -103,11 +112,24 @@ def create_handler(service, rules, static_dir):
                 parsed = urlparse(self.path)
                 parts = [part for part in parsed.path.split("/") if part]
                 actor = self._actor()
+                if (
+                    len(parts) == 3
+                    and parts[0] == "api"
+                    and parts[1] in ("zone", "zones")
+                    and parts[2] in ("split", "merge")
+                ):
+                    body = self._body()
+                    if parts[2] == "split":
+                        return self._send(200, service.split_zone(actor, body))
+                    return self._send(200, service.merge_zones(actor, body))
                 if len(parts) == 3 and parts[:2] == ["api", "entities"]:
                     body = self._body()
                     action = body.pop("action", None)
                     if not action:
                         raise ValidationError("action is required")
+                    reorganized = self._reorganization(action, body)
+                    if reorganized is not None:
+                        return self._send(200, reorganized)
                     return self._send(
                         200,
                         service.transition(
@@ -123,6 +145,9 @@ def create_handler(service, rules, static_dir):
                     action = body.pop("action", None)
                     if not action:
                         raise ValidationError("action is required")
+                    reorganized = self._reorganization(action, body)
+                    if reorganized is not None:
+                        return self._send(200, reorganized)
                     return self._send(
                         200,
                         service.transition(
@@ -134,9 +159,14 @@ def create_handler(service, rules, static_dir):
                         ),
                     )
                 if len(parts) == 5 and parts[0] == "api" and parts[4] == "actions":
+                    body = self._body()
+                    action = parts[3]
+                    if action == "split":
+                        body.setdefault("zone_id", parts[2])
+                        return self._send(200, service.split_zone(actor, body))
                     return self._send(
                         200,
-                        service.transition(actor, parts[2], parts[3], self._body(), None),
+                        service.transition(actor, parts[2], parts[3], body, None),
                     )
                 if len(parts) == 2 and parts[0] == "api":
                     body = self._body()
